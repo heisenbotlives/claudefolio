@@ -1,16 +1,37 @@
-# React + Vite
+# Claudefolio
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+A personal crypto portfolio tracker, inspired by the old Blockfolio app. Record your trades, and Claudefolio works out your balances, live values, and profit and loss for you. It runs in the browser and is designed to feel like a phone app.
 
-Currently, two official plugins are available:
+## What it does
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- Record transactions (deposit, withdraw, buy, sell), with balances calculated automatically from your transaction history rather than entered by hand.
+- Live prices and coin search powered by the CoinGecko API, with autocomplete when you type a ticker.
+- Portfolio value, per-coin value, and profit and loss shown in dollars and as a percentage, using average cost basis.
+- Token logos pulled from CoinGecko.
+- Export your data to a JSON file and import it back, so you control your own backups.
 
-## React Compiler
+## How your data is handled
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+Your portfolio data is stored locally in your own browser. It is never sent to a server, and none of your holdings or trade history is part of this code or this repository. The export feature lets you save a backup file yourself.
 
-## Expanding the Oxlint configuration
+## Built with
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and Oxlint's TypeScript related rules in your project.
+- React and Vite
+- Tailwind CSS
+- Lucide icons
+- CoinGecko API for prices, coin search, and logos
+
+## Running it locally
+
+You'll need Node.js installed. Then:
+
+```
+npm install
+npm run dev
+```
+
+This starts the app locally and gives you a web address to open in your browser.
+
+## Status
+
+A working personal project. Planned additions include tappable per-coin detail pages and price alerts.
