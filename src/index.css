@@ -8,3 +8,16 @@
 body {
   font-family: var(--font-sans);
 }
+
+/* The coin detail panel slides in from the right */
+@keyframes slide-in-right {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+.slide-over {
+  animation: slide-in-right 0.25s ease-out;
+}

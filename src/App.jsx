@@ -1,5 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
-import { Wallet, CirclePlus, History, Save } from 'lucide-react'
+import { Wallet, CirclePlus, History, Save, ArrowLeft } from 'lucide-react'
+import {
+  ResponsiveContainer,
+  LineChart,
+  Line,
+  YAxis,
+  Tooltip,
+} from 'recharts'
 import { COIN_IDS, STABLECOINS } from './coinIds.js'
 import {
   loadCoinIdCache,
@@ -151,6 +158,227 @@ const LOGO_COLORS = [
   'bg-indigo-600',
 ]
 
+// Chart time ranges: label shown on the button, days sent to
+// CoinGecko's market chart API.
+const CHART_RANGES = [
+  { days: '1', label: '24H' },
+  { days: '7', label: '7D' },
+  { days: '30', label: '30D' },
+  { days: '365', label: '1Y' },
+]
+
+// Chart data already fetched this session, so switching back to a
+// range we've seen costs no extra API request.
+const chartCache = new Map()
+
+// Fetch one coin's price history, remembering it for the session
+// so the same coin+range never costs a second request.
+async function fetchChartSeries(coinId, rangeDays) {
+  const cacheKey = `${coinId}:${rangeDays}`
+  if (chartCache.has(cacheKey)) return chartCache.get(cacheKey)
+  const res = await fetch(
+    `https://api.coingecko.com/api/v3/coins/${coinId}/market_chart?vs_currency=usd&days=${rangeDays}`
+  )
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  const json = await res.json()
+  const data = (json.prices || []).map(([t, price]) => ({ t, price }))
+  if (data.length === 0) throw new Error('empty')
+  chartCache.set(cacheKey, data)
+  return data
+}
+
+// The shared chart drawing: range buttons, one line, loading and
+// failure states. Both the coin chart and the portfolio P&L chart
+// use this, so they always look and behave the same.
+function ChartView({ rangeDays, onRangeChange, points, failed }) {
+  const tooltipDate = (t) =>
+    new Date(t).toLocaleString(
+      [],
+      rangeDays === '1'
+        ? { hour: '2-digit', minute: '2-digit' }
+        : { day: 'numeric', month: 'short', year: 'numeric' }
+    )
+
+  return (
+    <div>
+      <div className="flex gap-1.5">
+        {CHART_RANGES.map((r) => (
+          <button
+            key={r.days}
+            type="button"
+            onClick={() => onRangeChange(r.days)}
+            className={
+              'rounded-lg px-2.5 py-1 text-xs font-medium ' +
+              (rangeDays === r.days
+                ? 'bg-sky-500 text-slate-950'
+                : 'border border-slate-700 bg-slate-800 text-slate-400 hover:text-slate-200')
+            }
+          >
+            {r.label}
+          </button>
+        ))}
+      </div>
+      <div className="mt-3 h-48">
+        {failed ? (
+          <div className="flex h-full items-center justify-center text-sm text-slate-500">
+            Chart unavailable
+          </div>
+        ) : points === null ? (
+          <div className="flex h-full items-center justify-center text-sm text-slate-500">
+            Loading chart…
+          </div>
+        ) : (
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={points}>
+              <YAxis domain={['auto', 'auto']} hide />
+              <Tooltip
+                contentStyle={{
+                  backgroundColor: '#1e293b',
+                  border: '1px solid #334155',
+                  borderRadius: '0.5rem',
+                  fontSize: '12px',
+                }}
+                labelStyle={{ color: '#94a3b8' }}
+                itemStyle={{ color: '#e2e8f0' }}
+                formatter={(value) => [formatUsd(value), 'Price']}
+                labelFormatter={(label, payload) =>
+                  payload?.[0]?.payload?.t
+                    ? tooltipDate(payload[0].payload.t)
+                    : ''
+                }
+              />
+              <Line
+                type="monotone"
+                dataKey="price"
+                stroke="#38bdf8"
+                strokeWidth={2}
+                dot={false}
+                isAnimationActive={false}
+              />
+            </LineChart>
+          </ResponsiveContainer>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// Price chart for one coin, fetched only when shown.
+function CoinChart({ coinId }) {
+  const [rangeDays, setRangeDays] = useState('7')
+  const [points, setPoints] = useState(null) // null = loading
+  const [failed, setFailed] = useState(false)
+
+  useEffect(() => {
+    if (!coinId) {
+      setFailed(true)
+      return
+    }
+    let cancelled = false
+    setPoints(null)
+    setFailed(false)
+    fetchChartSeries(coinId, rangeDays)
+      .then((data) => {
+        if (!cancelled) setPoints(data)
+      })
+      .catch(() => {
+        if (!cancelled) setFailed(true)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [coinId, rangeDays])
+
+  return (
+    <ChartView
+      rangeDays={rangeDays}
+      onRangeChange={setRangeDays}
+      points={points}
+      failed={failed}
+    />
+  )
+}
+
+// The whole portfolio's value over time: each held coin's history
+// is fetched (one at a time, gently), then every moment's prices
+// are multiplied by the CURRENT holding amounts and added up.
+function PortfolioChart({ holdings }) {
+  const [rangeDays, setRangeDays] = useState('7')
+  const [points, setPoints] = useState(null)
+  const [failed, setFailed] = useState(false)
+
+  // Re-run when the holdings themselves change, not just the range.
+  const holdingsKey = holdings
+    .map((h) => `${h.id}:${h.amount}`)
+    .sort()
+    .join('|')
+
+  useEffect(() => {
+    const usable = holdings.filter((h) => h.id)
+    if (usable.length === 0) {
+      setFailed(true)
+      return
+    }
+    let cancelled = false
+    setPoints(null)
+    setFailed(false)
+    ;(async () => {
+      try {
+        const seriesList = []
+        for (const h of usable) {
+          seriesList.push({
+            amount: h.amount,
+            data: await fetchChartSeries(h.id, rangeDays),
+          })
+        }
+        if (cancelled) return
+        // Use the longest series' timestamps as the timeline; for
+        // each moment, take every coin's most recent price at or
+        // before that moment.
+        const base = seriesList.reduce((a, b) =>
+          b.data.length > a.data.length ? b : a
+        )
+        const pointers = seriesList.map(() => 0)
+        const combined = base.data.map(({ t }) => {
+          let total = 0
+          seriesList.forEach((s, i) => {
+            while (
+              pointers[i] + 1 < s.data.length &&
+              s.data[pointers[i] + 1].t <= t
+            ) {
+              pointers[i]++
+            }
+            total += s.amount * s.data[pointers[i]].price
+          })
+          return { t, price: total }
+        })
+        setPoints(combined)
+      } catch {
+        if (!cancelled) setFailed(true)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [holdingsKey, rangeDays])
+
+  return (
+    <div>
+      <ChartView
+        rangeDays={rangeDays}
+        onRangeChange={setRangeDays}
+        points={points}
+        failed={failed}
+      />
+      <p className="mt-2 text-xs text-slate-500">
+        This chart applies your current holdings to past prices, so it
+        shows how today's portfolio would have moved — not a record of
+        what you actually held on each past date.
+      </p>
+    </div>
+  )
+}
+
 // A coin's logo image; if there is no image (or it fails to load),
 // a coloured circle with the ticker letters so nothing looks broken.
 function CoinLogo({ coin, src, small = false }) {
@@ -266,6 +494,8 @@ function App() {
   const [error, setError] = useState('')
   const [backupMsg, setBackupMsg] = useState('')
   const [activeTab, setActiveTab] = useState('portfolio')
+  const [selectedCoin, setSelectedCoin] = useState(null)
+  const [showPnlChart, setShowPnlChart] = useState(false)
   const importInputRef = useRef(null)
   const [prices, setPrices] = useState({})
   const [lastUpdated, setLastUpdated] = useState(null)
@@ -621,69 +851,89 @@ function App() {
         </h1>
       </header>
 
+      {activeTab === 'portfolio' && (
+        <div className="w-full max-w-md mx-auto shrink-0 px-4 pb-3">
+          <div className="rounded-2xl bg-gradient-to-r from-blue-600 via-indigo-600 to-violet-600 px-5 py-5 shadow-lg shadow-indigo-950/40">
+            <div className="text-[11px] font-semibold uppercase tracking-widest text-blue-100/90">
+              Portfolio value
+            </div>
+            <div className="font-display text-4xl font-bold tracking-tight tabular-nums mt-1.5 text-white">
+              {balances.length === 0
+                ? '$0.00'
+                : lastUpdated
+                  ? formatUsd(totalValue)
+                  : '…'}
+            </div>
+            {lastUpdated && pricedBalances.length > 0 && (
+              <div className="text-sm font-medium tabular-nums mt-1.5">
+                <span
+                  className={
+                    totalPnl > 0.005
+                      ? 'text-emerald-300'
+                      : totalPnl < -0.005
+                        ? 'text-red-300'
+                        : 'text-blue-100/80'
+                  }
+                >
+                  {formatPnl(totalPnl)}
+                  {totalCost > 0
+                    ? ` (${formatPct((totalPnl / totalCost) * 100)})`
+                    : ''}
+                </span>
+                <span className="text-blue-100/70">
+                  {' '}
+                  · cost {formatUsd(totalCost)}
+                </span>
+              </div>
+            )}
+            {hasUnpriced && lastUpdated && (
+              <div className="text-xs text-amber-300 mt-1.5">
+                Excludes coins with no price data
+              </div>
+            )}
+          </div>
+
+          <div className="mt-3 flex items-center justify-between px-1 text-xs text-slate-500">
+            <span>
+              {lastUpdated
+                ? `Prices updated ${lastUpdated.toLocaleTimeString()}`
+                : balances.length === 0
+                  ? 'Add a transaction to see prices'
+                  : 'Loading prices…'}
+            </span>
+            <button
+              type="button"
+              onClick={() => setRefreshTick((t) => t + 1)}
+              className="rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 px-3 py-1.5 text-slate-200 font-medium"
+            >
+              Refresh
+            </button>
+          </div>
+          {priceError && (
+            <div className="mt-2 px-1 text-xs text-red-400">{priceError}</div>
+          )}
+        </div>
+      )}
+
       <main className="flex-1 overflow-y-auto">
         <div className="max-w-md mx-auto px-4 pb-6">
           {activeTab === 'portfolio' && (
             <section>
-              <div className="rounded-2xl bg-gradient-to-r from-blue-600 via-indigo-600 to-violet-600 px-5 py-5 shadow-lg shadow-indigo-950/40">
-                <div className="text-[11px] font-semibold uppercase tracking-widest text-blue-100/90">
-                  Portfolio value
-                </div>
-                <div className="font-display text-4xl font-bold tracking-tight tabular-nums mt-1.5 text-white">
-                  {balances.length === 0
-                    ? '$0.00'
-                    : lastUpdated
-                      ? formatUsd(totalValue)
-                      : '…'}
-                </div>
-                {lastUpdated && pricedBalances.length > 0 && (
-                  <div className="text-sm font-medium tabular-nums mt-1.5">
-                    <span
-                      className={
-                        totalPnl > 0.005
-                          ? 'text-emerald-300'
-                          : totalPnl < -0.005
-                            ? 'text-red-300'
-                            : 'text-blue-100/80'
-                      }
-                    >
-                      {formatPnl(totalPnl)}
-                      {totalCost > 0
-                        ? ` (${formatPct((totalPnl / totalCost) * 100)})`
-                        : ''}
-                    </span>
-                    <span className="text-blue-100/70">
-                      {' '}
-                      · cost {formatUsd(totalCost)}
-                    </span>
-                  </div>
-                )}
-                {hasUnpriced && lastUpdated && (
-                  <div className="text-xs text-amber-300 mt-1.5">
-                    Excludes coins with no price data
-                  </div>
-                )}
-              </div>
-
-              <div className="mt-3 flex items-center justify-between px-1 text-xs text-slate-500">
-                <span>
-                  {lastUpdated
-                    ? `Prices updated ${lastUpdated.toLocaleTimeString()}`
-                    : balances.length === 0
-                      ? 'Add a transaction to see prices'
-                      : 'Loading prices…'}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setRefreshTick((t) => t + 1)}
-                  className="rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 px-3 py-1.5 text-slate-200 font-medium"
-                >
-                  Refresh
-                </button>
-              </div>
-              {priceError && (
-                <div className="mt-2 px-1 text-xs text-red-400">
-                  {priceError}
+              <button
+                type="button"
+                onClick={() => setShowPnlChart((s) => !s)}
+                className={secondaryButtonClass + ' w-full text-sm'}
+              >
+                {showPnlChart ? 'Hide P&L chart' : 'Show P&L chart'}
+              </button>
+              {showPnlChart && (
+                <div className={cardClass + ' mt-3 p-4'}>
+                  <PortfolioChart
+                    holdings={balances.map((b) => ({
+                      id: idFor(b.coin) || null,
+                      amount: b.amount,
+                    }))}
+                  />
                 </div>
               )}
 
@@ -700,10 +950,13 @@ function App() {
                     const pnl = price !== null ? amount * price - cost : null
                     const name = metaFor(coin)?.name
                     return (
-                      <li
-                        key={coin}
-                        className={cardClass + ' px-4 py-3.5'}
-                      >
+                      <li key={coin} className={cardClass}>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedCoin(coin)}
+                          aria-label={`Open ${coin} details`}
+                          className="w-full px-4 py-3.5 text-left"
+                        >
                         <div className="flex items-center gap-3">
                           <CoinLogo coin={coin} src={metaFor(coin)?.image} />
                           <div className="min-w-0 flex-1">
@@ -753,6 +1006,7 @@ function App() {
                             <span className="text-slate-600">P&L —</span>
                           )}
                         </div>
+                        </button>
                       </li>
                     )
                   })}
@@ -1025,6 +1279,150 @@ function App() {
           })}
         </div>
       </nav>
+
+      {selectedCoin &&
+        (() => {
+          // Everything below reuses the numbers already calculated
+          // for the portfolio, so this panel always agrees with it.
+          const holding = balances.find((b) => b.coin === selectedCoin)
+          const amount = holding?.amount ?? 0
+          const cost = holding?.cost ?? 0
+          const price = priceFor(selectedCoin)
+          const pnl = price !== null ? amount * price - cost : null
+          const name = metaFor(selectedCoin)?.name
+          const coinTxs = [...transactions]
+            .reverse()
+            .filter(
+              (tx) =>
+                tx.coin === selectedCoin ||
+                tx.inCoin === selectedCoin ||
+                tx.outCoin === selectedCoin
+            )
+          return (
+            <div className="slide-over fixed inset-0 z-50 flex flex-col bg-slate-950">
+              <header className="w-full max-w-md mx-auto flex items-center gap-3 px-4 pt-5 pb-3">
+                <button
+                  type="button"
+                  onClick={() => setSelectedCoin(null)}
+                  aria-label="Back to balances"
+                  className="rounded-xl border border-slate-700 bg-slate-800 p-2 text-slate-200 hover:bg-slate-700"
+                >
+                  <ArrowLeft className="h-5 w-5" />
+                </button>
+                <CoinLogo
+                  coin={selectedCoin}
+                  src={metaFor(selectedCoin)?.image}
+                />
+                <div className="min-w-0">
+                  <div className="font-display text-lg font-bold leading-tight truncate">
+                    {name || selectedCoin}
+                  </div>
+                  <div className="text-xs text-slate-500">{selectedCoin}</div>
+                </div>
+              </header>
+
+              <div className="flex-1 overflow-y-auto">
+                <div className="max-w-md mx-auto px-4 pb-8">
+                  <div className="font-display text-3xl font-bold tracking-tight tabular-nums">
+                    {price !== null ? formatUsd(price) : '—'}
+                  </div>
+                  <div className="text-xs text-slate-500 mt-0.5 mb-4">
+                    Current price
+                  </div>
+
+                  <CoinChart coinId={idFor(selectedCoin) || null} />
+
+                  <div className={cardClass + ' mt-5 p-4 text-sm tabular-nums'}>
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-500">Your balance</span>
+                      <span className="font-medium">
+                        {formatAmount(amount)} {selectedCoin}
+                      </span>
+                    </div>
+                    <div className="mt-2.5 flex items-center justify-between">
+                      <span className="text-slate-500">Current value</span>
+                      <span className="font-medium">
+                        {price !== null ? formatUsd(amount * price) : '—'}
+                      </span>
+                    </div>
+                    <div className="mt-2.5 flex items-center justify-between">
+                      <span className="text-slate-500">Cost basis</span>
+                      <span className="font-medium">{formatUsd(cost)}</span>
+                    </div>
+                    <div className="mt-2.5 flex items-center justify-between border-t border-slate-800 pt-2.5">
+                      <span className="text-slate-500">Profit / loss</span>
+                      {pnl !== null ? (
+                        <span className={'font-semibold ' + pnlColor(pnl)}>
+                          {formatPnl(pnl)}
+                          {cost > 0
+                            ? ` (${formatPct((pnl / cost) * 100)})`
+                            : ''}
+                        </span>
+                      ) : (
+                        <span className="text-slate-600">—</span>
+                      )}
+                    </div>
+                  </div>
+
+                  <h2 className={headingClass + ' mt-6'}>
+                    {selectedCoin} transactions
+                  </h2>
+                  {coinTxs.length === 0 ? (
+                    <p className={cardClass + ' text-slate-500 text-sm p-4'}>
+                      No transactions for this coin.
+                    </p>
+                  ) : (
+                    <ul className="space-y-2.5">
+                      {coinTxs.map((tx) => (
+                        <li key={tx.id} className={cardClass + ' px-4 py-3'}>
+                          <div className="flex items-center gap-2">
+                            <span
+                              className={
+                                'rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ' +
+                                (TYPE_BADGE[tx.type] ||
+                                  'bg-slate-700 text-slate-300')
+                              }
+                            >
+                              {TYPES.find((t) => t.id === tx.type)?.label}
+                            </span>
+                            <span className="text-xs text-slate-500">
+                              {new Date(tx.date).toLocaleString([], {
+                                dateStyle: 'medium',
+                                timeStyle: 'short',
+                              })}
+                            </span>
+                          </div>
+                          <div className="mt-1 text-sm tabular-nums">
+                            {tx.type === 'deposit' && (
+                              <span className="text-emerald-400">
+                                +{formatAmount(tx.amount)} {tx.coin}
+                              </span>
+                            )}
+                            {tx.type === 'withdraw' && (
+                              <span className="text-red-400">
+                                −{formatAmount(tx.amount)} {tx.coin}
+                              </span>
+                            )}
+                            {(tx.type === 'buy' || tx.type === 'sell') && (
+                              <>
+                                <span className="text-emerald-400">
+                                  +{formatAmount(tx.inAmount)} {tx.inCoin}
+                                </span>{' '}
+                                <span className="text-red-400">
+                                  −{formatAmount(tx.outAmount)} {tx.outCoin}
+                                </span>
+                              </>
+                            )}
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </div>
+            </div>
+          )
+        })()}
     </div>
   )
 }
