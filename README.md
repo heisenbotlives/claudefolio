@@ -34,4 +34,8 @@ This starts the app locally and gives you a web address to open in your browser.
 
 ## Status
 
-A working personal project. Planned additions include tappable per-coin detail pages and price alerts.
+A working personal project. Tap any coin for a detail page with its price chart, holdings and transactions; the Portfolio tab also has an optional chart of total portfolio value over time. Planned additions include price alerts.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

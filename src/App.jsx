@@ -379,6 +379,20 @@ function PortfolioChart({ holdings }) {
   )
 }
 
+// True on wide screens (e.g. a foldable phone opened up), updating
+// live as the screen changes size. Matches Tailwind's `md` width.
+const WIDE_QUERY = '(min-width: 768px)'
+function useIsWide() {
+  const [wide, setWide] = useState(() => window.matchMedia(WIDE_QUERY).matches)
+  useEffect(() => {
+    const mq = window.matchMedia(WIDE_QUERY)
+    const onChange = (e) => setWide(e.matches)
+    mq.addEventListener('change', onChange)
+    return () => mq.removeEventListener('change', onChange)
+  }, [])
+  return wide
+}
+
 // A coin's logo image; if there is no image (or it fails to load),
 // a coloured circle with the ticker letters so nothing looks broken.
 function CoinLogo({ coin, src, small = false }) {
@@ -496,6 +510,7 @@ function App() {
   const [activeTab, setActiveTab] = useState('portfolio')
   const [selectedCoin, setSelectedCoin] = useState(null)
   const [showPnlChart, setShowPnlChart] = useState(false)
+  const isWide = useIsWide()
   const importInputRef = useRef(null)
   const [prices, setPrices] = useState({})
   const [lastUpdated, setLastUpdated] = useState(null)
@@ -843,16 +858,34 @@ function App() {
     )
   }
 
-  return (
-    <div className="h-dvh flex flex-col bg-slate-950 text-slate-100 antialiased">
-      <header className="w-full max-w-md mx-auto px-4 pt-5 pb-3">
-        <h1 className="font-display text-2xl font-bold tracking-tight">
-          Claudefolio
-        </h1>
-      </header>
+  // On a wide screen the Portfolio tab becomes two columns: banner
+  // and P&L chart on the left, balances list on the right.
+  const twoColumn = isWide && activeTab === 'portfolio'
 
-      {activeTab === 'portfolio' && (
-        <div className="w-full max-w-md mx-auto shrink-0 px-4 pb-3">
+  const pnlBlock = (
+    <>
+      <button
+        type="button"
+        onClick={() => setShowPnlChart((s) => !s)}
+        className={secondaryButtonClass + ' w-full text-sm'}
+      >
+        {showPnlChart ? 'Hide P&L chart' : 'Show P&L chart'}
+      </button>
+      {showPnlChart && (
+        <div className={cardClass + ' mt-3 p-4'}>
+          <PortfolioChart
+            holdings={balances.map((b) => ({
+              id: idFor(b.coin) || null,
+              amount: b.amount,
+            }))}
+          />
+        </div>
+      )}
+    </>
+  )
+
+  const bannerBlock = (
+        <>
           <div className="rounded-2xl bg-gradient-to-r from-blue-600 via-indigo-600 to-violet-600 px-5 py-5 shadow-lg shadow-indigo-950/40">
             <div className="text-[11px] font-semibold uppercase tracking-widest text-blue-100/90">
               Portfolio value
@@ -912,32 +945,48 @@ function App() {
           {priceError && (
             <div className="mt-2 px-1 text-xs text-red-400">{priceError}</div>
           )}
+        </>
+  )
+
+  return (
+    <div className="h-dvh flex flex-col bg-slate-950 text-slate-100 antialiased pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)]">
+      <header className="w-full max-w-md md:max-w-5xl mx-auto px-4 pt-[max(1.25rem,env(safe-area-inset-top))] pb-3">
+        <h1 className="font-display text-2xl font-bold tracking-tight">
+          Claudefolio
+        </h1>
+      </header>
+
+      {activeTab === 'portfolio' && !isWide && (
+        <div className="w-full max-w-md mx-auto shrink-0 px-4 pb-3">
+          {bannerBlock}
         </div>
       )}
 
-      <main className="flex-1 overflow-y-auto">
-        <div className="max-w-md mx-auto px-4 pb-6">
+      <div
+        className={
+          'flex-1 min-h-0 flex ' +
+          (twoColumn ? 'w-full max-w-5xl mx-auto gap-6 px-4' : '')
+        }
+      >
+        {twoColumn && (
+          <aside className="w-[22rem] shrink-0 overflow-y-auto pb-6">
+            {bannerBlock}
+            <div className="mt-4">{pnlBlock}</div>
+          </aside>
+        )}
+      <main className="flex-1 min-w-0 overflow-y-auto">
+        <div
+          className={
+            twoColumn ? 'pb-6' : 'max-w-md md:max-w-2xl mx-auto px-4 pb-6'
+          }
+        >
           {activeTab === 'portfolio' && (
             <section>
-              <button
-                type="button"
-                onClick={() => setShowPnlChart((s) => !s)}
-                className={secondaryButtonClass + ' w-full text-sm'}
-              >
-                {showPnlChart ? 'Hide P&L chart' : 'Show P&L chart'}
-              </button>
-              {showPnlChart && (
-                <div className={cardClass + ' mt-3 p-4'}>
-                  <PortfolioChart
-                    holdings={balances.map((b) => ({
-                      id: idFor(b.coin) || null,
-                      amount: b.amount,
-                    }))}
-                  />
-                </div>
-              )}
+              {!isWide && pnlBlock}
 
-              <h2 className={headingClass + ' mt-5'}>Balances</h2>
+              <h2 className={headingClass + (isWide ? '' : ' mt-5')}>
+                Balances
+              </h2>
               {balances.length === 0 ? (
                 <p className={cardClass + ' text-slate-500 text-sm p-4'}>
                   No balances yet. Use Add Transaction below to record your
@@ -1253,9 +1302,10 @@ function App() {
           )}
         </div>
       </main>
+      </div>
 
-      <nav className="border-t border-slate-800 bg-slate-950/95 backdrop-blur">
-        <div className="max-w-md mx-auto grid grid-cols-4">
+      <nav className="border-t border-slate-800 bg-slate-950/95 backdrop-blur pb-[env(safe-area-inset-bottom)]">
+        <div className="max-w-md md:max-w-2xl mx-auto grid grid-cols-4">
           {NAV_TABS.map((t) => {
             const Icon = t.icon
             const active = activeTab === t.id
@@ -1299,8 +1349,8 @@ function App() {
                 tx.outCoin === selectedCoin
             )
           return (
-            <div className="slide-over fixed inset-0 z-50 flex flex-col bg-slate-950">
-              <header className="w-full max-w-md mx-auto flex items-center gap-3 px-4 pt-5 pb-3">
+            <div className="slide-over fixed inset-0 z-50 flex flex-col bg-slate-950 pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)]">
+              <header className="w-full max-w-md md:max-w-5xl mx-auto flex items-center gap-3 px-4 pt-[max(1.25rem,env(safe-area-inset-top))] pb-3">
                 <button
                   type="button"
                   onClick={() => setSelectedCoin(null)}
@@ -1322,7 +1372,8 @@ function App() {
               </header>
 
               <div className="flex-1 overflow-y-auto">
-                <div className="max-w-md mx-auto px-4 pb-8">
+                <div className="max-w-md md:max-w-5xl mx-auto px-4 pb-[max(2rem,env(safe-area-inset-bottom))] md:grid md:grid-cols-2 md:gap-8">
+                  <div>
                   <div className="font-display text-3xl font-bold tracking-tight tabular-nums">
                     {price !== null ? formatUsd(price) : '—'}
                   </div>
@@ -1331,8 +1382,10 @@ function App() {
                   </div>
 
                   <CoinChart coinId={idFor(selectedCoin) || null} />
+                  </div>
 
-                  <div className={cardClass + ' mt-5 p-4 text-sm tabular-nums'}>
+                  <div>
+                  <div className={cardClass + ' mt-5 md:mt-0 p-4 text-sm tabular-nums'}>
                     <div className="flex items-center justify-between">
                       <span className="text-slate-500">Your balance</span>
                       <span className="font-medium">
@@ -1418,6 +1471,7 @@ function App() {
                       ))}
                     </ul>
                   )}
+                  </div>
                 </div>
               </div>
             </div>
