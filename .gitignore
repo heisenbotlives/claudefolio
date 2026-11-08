@@ -9,6 +9,9 @@ lerna-debug.log*
 
 node_modules
 dist
+
+# Claudefolio backup files contain personal holdings; never commit them
+portfolio-backup-*.json
 dist-ssr
 *.local
 
